@@ -11,22 +11,24 @@
 #define HASH_P2   31
 
 static int hash_table_hash(const void* key, const size_t sz_key) {
-    int hash_res = 0, *pkey = (void*)key;
-    for(size_t i = 0; i < sz_key; ++i, ++pkey)
-        hash_res = (hash_res * HASH_P1 + (*pkey)) % HASH_SIZE;
+    int hash_res = 0;
+    const unsigned char *pkey = (const unsigned char*)key;
+    for(size_t i = 0; i < sz_key; ++i)
+        hash_res = (hash_res * HASH_P1 + pkey[i]) % HASH_SIZE;
     return hash_res;
 }
 
 void hash_table_init(hash_table_t* this) {
     *this = (list_node_t*)malloc(sizeof(list_node_t) * HASH_SIZE);
-    memset(*this, 0, sizeof(list_node_t*) * HASH_SIZE);
+    for(int i = 0; i < HASH_SIZE; ++i)
+        list_node_init((*this) + i);
 }
 
 void hash_table_destroy(hash_table_t* this) { 
     for(int i = 0; i < HASH_SIZE; ++i) {
-        list_node_t **p = &( (*this)[i].nxt );
-        while(*p) {
-            list_node_t *t = *p; *p = (*p)->nxt;
+        list_node_t *p = (*this)[i].nxt;
+        while(p != (*this) + i) {
+            list_node_t *t = p; p = p->nxt;
             /* Notice: the bidirection list point breaks here, 
              * but does make sense because we are destroying it.
              *
@@ -62,8 +64,8 @@ hash_table_elem_t* hash_table_query(
         const void* key, 
         const size_t sz_key) {
     const int hash = hash_table_hash(key, sz_key);
-    for(list_node_t *p = (*this)[hash].nxt; p; p=p->nxt)
-        if(!memcpy(((hash_table_elem_t*)(p->ptr))->key, key, sz_key))
+    for(list_node_t *p = (*this)[hash].nxt; p != (*this) + hash; p=p->nxt)
+        if(!memcmp(((hash_table_elem_t*)(p->ptr))->key, key, sz_key))
             return (hash_table_elem_t*)(p->ptr);
     return NULL;
 }
@@ -72,4 +74,5 @@ void hash_table_remove(hash_table_t *this, hash_table_elem_t *elem) {
     (void)(this);  /* This is unused here */
     list_node_remove(elem->ref_list_nd);
     free(elem->key);
+    free(elem);
 }
