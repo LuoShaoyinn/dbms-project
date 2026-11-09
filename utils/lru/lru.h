@@ -41,21 +41,11 @@ typedef struct _lru_s {
 void lru_init(lru_t* p, const size_t max_size);
 void lru_destroy(lru_t* p);
 
-/* lru_insert:
- *      insert a new entry at the top. Keys are not checked. */
-lru_node_t* lru_insert(lru_t* p, void* key, const size_t sz_key, void* ptr);
-
 /* lru_access:
- *      bring the one to the top */
-lru_node_t* lru_access(lru_t* p, void* key, const size_t sz_key);
-
-/* lru_replace:
- *      insert, then remove the least recently used one when over max_size.
- *      Returns the removed pointer, or NULL if nothing was removed. */
-void* lru_replace(lru_t* p, void* key, const size_t sz_key, void* ptr);
-
-/* lru_remove:
- *      remove one with the pointer. */
-void* lru_remove(lru_t* p, lru_node_t* p_lru_node);
+ *      access key and bring it to the top, creating the node when missing.
+ *      ptr_out: receives the created node, or NULL if the key already existed.
+ *      rm_ptr:  receives the removed pointer when over max_size. */
+lru_node_t* lru_access(lru_t* p, void* key, const size_t sz_key,
+        void **ptr_out, void **rm_ptr);
 
 #endif // _H_LRU
