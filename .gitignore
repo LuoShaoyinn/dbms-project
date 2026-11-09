@@ -1,2 +1,7 @@
 build/
 compile_commands.json
+.vscode
+*.swp
+.opencode
+.codex
+.claude
