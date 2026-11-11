@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include "constant.h"
 #include "utils/lru/lru.h"
 
 #ifdef _WIN32
@@ -27,12 +28,7 @@
  *
  */
 
-#define BASE_DIR        "./data/"
-#define DB_PREFIX       "db/"
-#define TABLE_PREFIX    "table/"
-#define INDEX_PREFIX    "index/"
-
-typedef struct __s_fs_page {
+typedef struct __fs_page_s {
     void* ptr;                  /* always point to the mapped page mem */
     int fd;                     /* must use kernel style file descriptor */
     uint32_t ref_cnt;
@@ -40,7 +36,7 @@ typedef struct __s_fs_page {
     lru_node_t *ref_lru_node;
 } _fs_page_t;
 
-typedef struct _s_fs_datablock {
+typedef struct _fs_datablock_s {
     void* ptr;                  /* this ptr points to the offset */
     _fs_page_t *_ref_fs_page;    /* a pointer to the internal datastructure */
 } fs_datablock_t;

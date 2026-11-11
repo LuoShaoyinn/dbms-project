@@ -8,9 +8,9 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#include "constant.h"
 #include "fs/fs.h"
 
-#define TEST_PAGE_SIZE 4096
 #define TEST_STRESS_PAGES 300
 
 static void ensure_dirs(void) {
@@ -54,14 +54,14 @@ static void test_pages_and_offsets(void) {
     fs_init();
     for(int i = 0; i < 16; ++i) {
         fs_datablock_t *blk = borrow_table("testdb", "pages",
-                (size_t)i * TEST_PAGE_SIZE, sizeof(int));
+                (size_t)i * PAGE_SIZE, sizeof(int));
         assert(blk != NULL);
         *(int*)blk->ptr = i;
         fs_return(blk);
     }
     for(int i = 0; i < 16; ++i) {
         fs_datablock_t *blk = borrow_table("testdb", "pages",
-                (size_t)i * TEST_PAGE_SIZE, sizeof(int));
+                (size_t)i * PAGE_SIZE, sizeof(int));
         assert(blk != NULL);
         assert(*(int*)blk->ptr == i);
         fs_return(blk);
@@ -103,14 +103,14 @@ static void test_eviction_stress(void) {
     fs_init();
     for(int i = 0; i < TEST_STRESS_PAGES; ++i) {
         fs_datablock_t *blk = borrow_table("testdb", "stress",
-                (size_t)i * TEST_PAGE_SIZE, sizeof(int));
+                (size_t)i * PAGE_SIZE, sizeof(int));
         assert(blk != NULL);
         *(int*)blk->ptr = i;
         fs_return(blk);
     }
     for(int i = 0; i < TEST_STRESS_PAGES; ++i) {
         fs_datablock_t *blk = borrow_table("testdb", "stress",
-                (size_t)i * TEST_PAGE_SIZE, sizeof(int));
+                (size_t)i * PAGE_SIZE, sizeof(int));
         assert(blk != NULL);
         assert(*(int*)blk->ptr == i);
         fs_return(blk);

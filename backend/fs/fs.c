@@ -14,13 +14,10 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#include "constant.h"
 #include "utils/hash_table/hash_table.h"
 #include "fs.h"
 
-
-#define MAX_FILENAME    256
-#define PAGE_SIZE       4096
-#define FS_LRU_MAXSIZE  256
 
 static lru_t        fs_lru;             /* main lru structure */
 

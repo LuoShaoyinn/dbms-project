@@ -8,9 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "constant.h"
 #include "elem_type.h"
-
-#define MAX_ELEM_N 2048
 
 const char ELEM_TYPE_D = 'd'; /* double */
 const char ELEM_TYPE_I = 'i'; /* int32_t */
