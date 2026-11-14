@@ -53,6 +53,17 @@ fs_datablock_t* fs_borrow(fs_tmp_string filename, \
         const size_t offset, const size_t sz);
 void fs_return(fs_datablock_t *datablock);
 
+/* fs_create:
+ *      create a new file exclusively, without touching an existing one.
+ *      Returns 0 on success, 1 when the file already exists, -1 on any other
+ *      open failure. The filename is consumed in every case. */
+int fs_create(fs_tmp_string filename);
+
+/* fs_exists:
+ *      probe a path with open(2); never creates the file.
+ *      The filename is consumed. */
+bool fs_exists(fs_tmp_string filename);
+
 /* fs_remove:
  *      unlink a file and drop its name -> file id mapping.
  *      Cached pages stay valid because the LRU is keyed by file id; a later

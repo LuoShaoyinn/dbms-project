@@ -222,6 +222,29 @@ void fs_return(fs_datablock_t *p_datablock) {
     free(p_datablock);
 }
 
+int fs_create(fs_tmp_string filename) {
+    if(filename == NULL) return -1;
+
+    int ret = 0;
+    int fd = open(filename, O_CREAT | O_EXCL | O_RDWR, 0644);
+    if(fd == -1) ret = (errno == EEXIST) ? 1 : -1;
+    else close(fd);
+
+    free(filename);
+    return ret;
+}
+
+bool fs_exists(fs_tmp_string filename) {
+    if(filename == NULL) return false;
+
+    int fd = open(filename, O_RDONLY);
+    bool found = fd >= 0;
+    if(found) close(fd);
+
+    free(filename);
+    return found;
+}
+
 int fs_remove(fs_tmp_string filename) {
     if(filename == NULL) return -1;
 

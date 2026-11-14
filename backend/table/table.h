@@ -40,6 +40,33 @@ typedef struct _s_table_page {
     char data[];
 } table_page_t;
 
+/* Recoverable table statuses. TABLE_SCAN_END is a normal end of scan; every
+ * negative value is an error. */
+typedef enum _s_table_status {
+    TABLE_OK = 0,
+    TABLE_SCAN_END = 1,
+    TABLE_ERR = -1,
+    TABLE_ERR_EXISTS = -2,
+    TABLE_ERR_NOT_FOUND = -3,
+    TABLE_ERR_INVALID = -4,
+    TABLE_ERR_RID = -5,
+    TABLE_ERR_IO = -6,
+    TABLE_ERR_FULL = -7
+} table_status_t;
+
+/* A table handle owns its decoded header and its file path.
+ * The header mirrors page 0; page_count and free_page_hint are persisted on
+ * every allocation change. */
+typedef struct _s_table {
+    table_header_t head;
+    char *path;                 /* owned copy of the table file path */
+} table_t;
+
+/* Scans are opaque. A scan must be closed before its table is closed.
+ * Mutating a table while a scan is active is unsupported: the scan reads
+ * the table's live header but keeps a borrowed page between calls. */
+typedef struct _s_table_scan table_scan_t;
+
 /* The header is kept in page 0 of a table file. Data pages start from 1. */
 void table_header_init(table_header_t *this, void *p_buffer);
 
@@ -77,5 +104,55 @@ uint32_t table_page_first_free_slot(const table_header_t *p_head,
         const uint64_t slot_bitmap);
 bool table_page_is_full(const table_header_t *p_head,
         const uint64_t slot_bitmap);
+
+/* Record CRUD.
+ *
+ * table_create:
+ *      create a brand-new table file. Fails with TABLE_ERR_EXISTS when the
+ *      path already exists and leaves that file untouched.
+ * table_open:
+ *      open an existing table. Fails with TABLE_ERR_NOT_FOUND when the path
+ *      is absent; it never creates the file.
+ * table_close:
+ *      destroy the handle. Any scan on this table must already be closed.
+ *
+ * Records are already encoded byte buffers whose length must equal
+ * table_get_record_size(). Mutation takes effect immediately in the mapped
+ * file and allocation metadata is saved before returning.
+ *
+ * table_insert:
+ *      store one record and write its RID to *rid.
+ * table_get:
+ *      copy one occupied record into a caller-owned malloc() buffer written
+ *      to *record; the caller must free() it. *size receives its length.
+ *      TABLE_ERR_RID means the RID is out of range or the slot is free.
+ * table_update:
+ *      overwrite one occupied slot without changing its RID.
+ * table_delete:
+ *      clear one occupied slot. Other records are never moved.
+ *
+ * Scans visit occupied slots in page/slot order.
+ * table_scan_next:
+ *      return TABLE_OK with a caller-owned record buffer and its RID, or
+ *      TABLE_SCAN_END when no record remains. */
+table_status_t table_create(table_t **this, const char *db_name,
+        const char *table_name, const uint32_t m,
+        const char *const *key_name, const char *const *fmt);
+table_status_t table_open(table_t **this, const char *db_name,
+        const char *table_name);
+void table_close(table_t *this);
+
+table_status_t table_insert(table_t *this, const void *record,
+        const size_t size, uint32_t *rid);
+table_status_t table_get(table_t *this, const uint32_t rid,
+        void **record, size_t *size);
+table_status_t table_update(table_t *this, const uint32_t rid,
+        const void *record, const size_t size);
+table_status_t table_delete(table_t *this, const uint32_t rid);
+
+table_status_t table_scan_open(table_t *this, table_scan_t **scan);
+table_status_t table_scan_next(table_scan_t *scan, uint32_t *rid,
+        void **record, size_t *size);
+void table_scan_close(table_scan_t *scan);
 
 #endif // _H_TABLE
