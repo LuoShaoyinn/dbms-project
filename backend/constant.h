@@ -11,10 +11,9 @@
 #define MAX_ELEM_N              2048
 
 #define MAX_FILENAME            256
-#define PAGE_SIZE               4096
+#define PAGE_SIZE               8192
 #define FS_LRU_MAXSIZE          256
 
-#define TABLE_PAGE_MAX          64
 #define TABLE_SLOT_MAX          64
 
 #define BASE_DIR                "./data/"
