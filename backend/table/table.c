@@ -267,6 +267,29 @@ static void _table_normalize_hint(table_t *this) {
     }
 }
 
+/* Re-read the allocation metadata written by other handles. The schema is
+ * immutable, so only page_count and free_page_hint can change. */
+static table_status_t _table_refresh(table_t *this) {
+    fs_datablock_t *block = _table_borrow_page(this, 0);
+    if(block == NULL) return TABLE_ERR_IO;
+
+    const char *p = (const char*)block->ptr;
+    uint32_t m;
+    uint32_t page_count;
+    uint32_t free_page_hint;
+    memcpy(&m, p, sizeof(m)); p += sizeof(m);
+    memcpy(&page_count, p, sizeof(page_count)); p += sizeof(page_count);
+    memcpy(&free_page_hint, p, sizeof(free_page_hint));
+    fs_return(block);
+
+    if(m != this->head.m) return TABLE_ERR_INVALID;
+
+    this->head.page_count = page_count;
+    this->head.free_page_hint = free_page_hint;
+    _table_normalize_hint(this);
+    return TABLE_OK;
+}
+
 /* Resolve a RID only when its page is allocated. Occupancy is checked by the
  * caller after the page is borrowed. */
 static int _table_rid_page(const table_t *this, const uint32_t rid,
@@ -409,7 +432,9 @@ table_status_t table_insert(table_t *this, const void *record,
     uint32_t slots = table_get_slots_per_page(&this->head);
     if(slots == 0) return TABLE_ERR_INVALID;
 
-    _table_normalize_hint(this);
+    table_status_t refreshed = _table_refresh(this);
+    if(refreshed != TABLE_OK) return refreshed;
+
     uint32_t page_count = this->head.page_count;
     uint32_t start = page_count == 0 ? 1 : this->head.free_page_hint;
     uint32_t page_id = 0;
@@ -417,11 +442,11 @@ table_status_t table_insert(table_t *this, const void *record,
     uint64_t bitmap = 0;
     fs_datablock_t *block = NULL;
 
-    /* Prefer pages from free_page_hint, wrapping through existing pages
-     * before growing the file. */
-    for(uint32_t i = 0; i < page_count; ++i) {
-        uint32_t candidate = start + i;
-        if(candidate > page_count) candidate -= page_count;
+    /* Pages before free_page_hint are full, so inspect only the hint and
+     * later pages. This keeps append-only inserts from rescanning every
+     * earlier full page. */
+    for(uint64_t i = start; i <= page_count; ++i) {
+        uint32_t candidate = (uint32_t)i;
 
         block = _table_borrow_page(this, candidate);
         if(block == NULL) return TABLE_ERR_IO;
@@ -465,9 +490,11 @@ table_status_t table_insert(table_t *this, const void *record,
     fs_return(block);
 
     this->head.page_count = page_count;
-    if(table_page_is_full(&this->head, bitmap)) {
-        this->head.free_page_hint = page_id >= page_count ? 1 : page_id + 1;
+    if(table_page_is_full(&this->head, bitmap) && page_id < page_count) {
+        this->head.free_page_hint = page_id + 1;
     } else {
+        /* Keep the hint on the last full page instead of wrapping to page 1;
+         * the next append then checks that page and grows the file. */
         this->head.free_page_hint = page_id;
     }
 
@@ -483,6 +510,9 @@ table_status_t table_get(table_t *this, const uint32_t rid,
     if(this == NULL || record == NULL || size == NULL) {
         return TABLE_ERR_INVALID;
     }
+
+    table_status_t refreshed = _table_refresh(this);
+    if(refreshed != TABLE_OK) return refreshed;
 
     uint32_t page_id;
     if(!_table_rid_page(this, rid, &page_id)) return TABLE_ERR_RID;
@@ -523,6 +553,9 @@ table_status_t table_update(table_t *this, const uint32_t rid,
         return TABLE_ERR_INVALID;
     }
 
+    table_status_t refreshed = _table_refresh(this);
+    if(refreshed != TABLE_OK) return refreshed;
+
     uint32_t page_id;
     if(!_table_rid_page(this, rid, &page_id)) return TABLE_ERR_RID;
 
@@ -547,6 +580,9 @@ table_status_t table_update(table_t *this, const uint32_t rid,
 
 table_status_t table_delete(table_t *this, const uint32_t rid) {
     if(this == NULL) return TABLE_ERR_INVALID;
+
+    table_status_t refreshed = _table_refresh(this);
+    if(refreshed != TABLE_OK) return refreshed;
 
     uint32_t page_id;
     if(!_table_rid_page(this, rid, &page_id)) return TABLE_ERR_RID;
@@ -580,6 +616,9 @@ table_status_t table_delete(table_t *this, const uint32_t rid) {
 
 table_status_t table_scan_open(table_t *this, table_scan_t **scan) {
     if(this == NULL || scan == NULL) return TABLE_ERR_INVALID;
+
+    table_status_t refreshed = _table_refresh(this);
+    if(refreshed != TABLE_OK) return refreshed;
 
     table_scan_t *state = (table_scan_t*)malloc(sizeof(table_scan_t));
     if(state == NULL) return TABLE_ERR;

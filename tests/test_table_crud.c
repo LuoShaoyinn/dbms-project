@@ -277,6 +277,105 @@ static void test_hole_reuse(void) {
     fs_finish("reuse");
 }
 
+static void test_second_handle_no_overwrite(void) {
+    fs_start("two");
+    table_t *a = create_table("two");
+    table_t *b = NULL;
+    assert(table_open(&b, TEST_DB, "two") == TABLE_OK);
+
+    assert(insert_record(a, 10) == 0);
+    assert(insert_record(b, 11) == 1);
+    assert(insert_record(b, 12) == 2);
+    assert(insert_record(a, 13) == 3);
+
+    check_record(a, 0, 10, 10);
+    check_record(a, 1, 11, 11);
+    check_record(a, 2, 12, 12);
+    check_record(a, 3, 13, 13);
+    check_record(b, 0, 10, 10);
+    check_record(b, 1, 11, 11);
+    check_record(b, 2, 12, 12);
+    check_record(b, 3, 13, 13);
+
+    assert(a->head.page_count == 1);
+    assert(b->head.page_count == 1);
+
+    table_close(b);
+    table_close(a);
+    fs_finish("two");
+}
+
+static void test_append_only_hint(void) {
+    fs_start("append");
+    table_t *this = create_table("append");
+
+    for(uint32_t i = 0; i < 2 * TABLE_SLOT_MAX; ++i)
+        assert(insert_record(this, (int)i) == i);
+    assert(this->head.page_count == 2);
+    assert(this->head.free_page_hint == 2);
+
+    /* Fill the last page exactly; the hint must stay there instead of
+     * wrapping to page 1 and rescanning every earlier full page. */
+    for(uint32_t i = 2 * TABLE_SLOT_MAX; i < 3 * TABLE_SLOT_MAX; ++i)
+        assert(insert_record(this, (int)i) == i);
+    assert(this->head.page_count == 3);
+    assert(this->head.free_page_hint == 3);
+
+    /* The next insert checks only that last page, then appends page 4. */
+    assert(insert_record(this, 3 * TABLE_SLOT_MAX)
+            == 3 * TABLE_SLOT_MAX);
+    assert(this->head.page_count == 4);
+    assert(this->head.free_page_hint == 4);
+
+    check_record(this, 0, 0, 0);
+    check_record(this, 3 * TABLE_SLOT_MAX, 3 * TABLE_SLOT_MAX,
+            3 * TABLE_SLOT_MAX);
+
+    table_close(this);
+    fs_finish("append");
+}
+
+static void test_hole_reuse_after_reopen(void) {
+    fs_start("reuse_reopen");
+    table_t *this = create_table("reuse_reopen");
+
+    for(int i = 0; i < 130; ++i)
+        assert(insert_record(this, i) == (uint32_t)i);
+    assert(this->head.page_count == 3);
+    assert(this->head.free_page_hint == 3);
+
+    assert(table_delete(this, 70) == TABLE_OK);
+    assert(table_delete(this, 5) == TABLE_OK);
+    assert(this->head.free_page_hint == 1);
+    table_close(this);
+    fs_destroy();
+
+    fs_init();
+    assert(table_open(&this, TEST_DB, "reuse_reopen") == TABLE_OK);
+    assert(this->head.page_count == 3);
+    assert(this->head.free_page_hint == 1);
+
+    void *record = NULL;
+    size_t size = 0;
+    unsigned char buffer[TEST_RECORD_SIZE];
+    record_fill(buffer, 1, 1);
+    assert(table_get(this, 5, &record, &size) == TABLE_ERR_RID);
+    assert(table_get(this, 70, &record, &size) == TABLE_ERR_RID);
+    assert(table_update(this, 5, buffer, sizeof(buffer)) == TABLE_ERR_RID);
+    assert(table_delete(this, 5) == TABLE_ERR_RID);
+
+    assert(insert_record(this, 1000) == 5);
+    assert(this->head.page_count == 3);
+    check_record(this, 5, 1000, 1000);
+
+    assert(insert_record(this, 1001) == 70);
+    assert(this->head.page_count == 3);
+    check_record(this, 70, 1001, 1001);
+
+    table_close(this);
+    fs_finish("reuse_reopen");
+}
+
 static void test_scan_skips_holes(void) {
     fs_start("scan");
     table_t *this = create_table("scan");
@@ -487,6 +586,9 @@ int main(void) {
     test_update_in_place();
     test_delete_edges();
     test_hole_reuse();
+    test_second_handle_no_overwrite();
+    test_append_only_hint();
+    test_hole_reuse_after_reopen();
     test_scan_skips_holes();
     test_restart_persistence();
     test_missing_open();
