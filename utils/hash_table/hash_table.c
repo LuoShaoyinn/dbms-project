@@ -7,14 +7,15 @@
 #include "hash_table.h"
 
 #define HASH_SIZE 10007 /* Must be a prime */
-#define HASH_P1   29
-#define HASH_P2   31
 
-static int hash_table_hash(const void* key, const size_t sz_key) {
-    int hash_res = 0;
+static uint64_t hash_table_hash(const void* key, const size_t sz_key) {
+    /* FNV-1a uses unsigned wraparound; reduce to a bucket only once. */
+    uint64_t hash_res = UINT64_C(14695981039346656037);
     const unsigned char *pkey = (const unsigned char*)key;
-    for(size_t i = 0; i < sz_key; ++i)
-        hash_res = (hash_res * HASH_P1 + pkey[i]) % HASH_SIZE;
+    for(size_t i = 0; i < sz_key; ++i) {
+        hash_res ^= pkey[i];
+        hash_res *= UINT64_C(1099511628211);
+    }
     return hash_res;
 }
 
@@ -50,12 +51,14 @@ hash_table_elem_t* hash_table_insert(
         const void* key,    /* Using raw memory hashing */
         const size_t sz_key,/* Size of key*/
         void* ptr) {
-    const int hash = hash_table_hash(key, sz_key);
+    const uint64_t hash = hash_table_hash(key, sz_key);
     hash_table_elem_t* elem;
     elem = (hash_table_elem_t*)malloc(sizeof(hash_table_elem_t));
-    void* elem_key = malloc(sz_key); memcpy(elem_key, key, sz_key);
-    *elem = (hash_table_elem_t){.key = elem_key, .ptr = ptr };
-    elem->ref_list_nd = list_node_insert_head((*this) + hash, elem);
+    void* elem_key = malloc(sz_key == 0 ? 1 : sz_key);
+    if(sz_key != 0) memcpy(elem_key, key, sz_key);
+    *elem = (hash_table_elem_t){.key = elem_key, .ptr = ptr,
+        .sz_key = sz_key, .hash = hash};
+    elem->ref_list_nd = list_node_insert_head((*this) + hash % HASH_SIZE, elem);
     return elem;
 }
 
@@ -63,10 +66,14 @@ hash_table_elem_t* hash_table_query(
         const hash_table_t* this, 
         const void* key, 
         const size_t sz_key) {
-    const int hash = hash_table_hash(key, sz_key);
-    for(list_node_t *p = (*this)[hash].nxt; p != (*this) + hash; p=p->nxt)
-        if(!memcmp(((hash_table_elem_t*)(p->ptr))->key, key, sz_key))
-            return (hash_table_elem_t*)(p->ptr);
+    const uint64_t hash = hash_table_hash(key, sz_key);
+    list_node_t *head = (*this) + hash % HASH_SIZE;
+    for(list_node_t *p = head->nxt; p != head; p=p->nxt) {
+        hash_table_elem_t *elem = (hash_table_elem_t*)p->ptr;
+        if(elem->hash == hash && elem->sz_key == sz_key &&
+                (sz_key == 0 || !memcmp(elem->key, key, sz_key)))
+            return elem;
+    }
     return NULL;
 }
 

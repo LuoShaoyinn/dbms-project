@@ -129,11 +129,35 @@ static void test_destroy_non_empty(void) {
     lru_destroy(&lru);
 }
 
+static void test_binary_key_lengths(void) {
+    lru_t lru;
+    unsigned char key[2] = {0};
+    int short_value = 1, long_value = 2;
+    void *created, *removed;
+
+    lru_init(&lru, 2);
+    lru_node_t *short_node = lru_access(&lru, key, 1, &created, &removed);
+    short_node->ptr = &short_value;
+    lru_node_t *long_node = lru_access(&lru, key, 2, &created, &removed);
+    assert(created == long_node && long_node != short_node);
+    long_node->ptr = &long_value;
+    assert(lru.size == 2);
+
+    assert(lru_access(&lru, key, 1, &created, &removed) == short_node);
+    assert(created == NULL);
+    unsigned char other = 1;
+    lru_access(&lru, &other, 1, &created, &removed);
+    assert(removed == &long_value);
+    assert(lru_access(&lru, key, 1, &created, &removed) == short_node);
+    lru_destroy(&lru);
+}
+
 int main(void) {
     test_init_empty();
     test_access_creates_and_hits();
     test_access_evicts_lru();
     test_access_without_rm_ptr();
     test_destroy_non_empty();
+    test_binary_key_lengths();
     return 0;
 }

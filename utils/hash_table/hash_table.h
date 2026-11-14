@@ -6,12 +6,15 @@
 #define _H_HASH_TABLE
 
 #include <stddef.h>
+#include <stdint.h>
 #include "utils/list/list.h"
 
 typedef list_node_t* hash_table_t;
 typedef struct _hash_table_element_s { 
     list_node_t *ref_list_nd;
     void *key, *ptr;
+    size_t sz_key;
+    uint64_t hash;             /* reject bucket collisions before memcmp */
 } hash_table_elem_t;
 
 void hash_table_init(hash_table_t* this); 
@@ -28,4 +31,3 @@ hash_table_elem_t* hash_table_query(
 void hash_table_remove(hash_table_t* this, hash_table_elem_t *elem);
 
 #endif // _H_HASH_TABLE
-

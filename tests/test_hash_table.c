@@ -104,19 +104,43 @@ static void test_remove(void) {
 
 static void test_many_entries(void) {
     hash_table_t ht;
-    int keys[500], values[500];
+    /* More entries than buckets exercises collision chains. */
+    int keys[12000], values[12000];
 
     hash_table_init(&ht);
-    for(int i = 0; i < 500; ++i) {
+    for(int i = 0; i < 12000; ++i) {
         keys[i] = i;
         values[i] = i * 2;
         assert(hash_table_insert(&ht, &keys[i], sizeof keys[i], &values[i]) != NULL);
     }
-    for(int i = 0; i < 500; ++i) {
+    for(int i = 0; i < 12000; ++i) {
         hash_table_elem_t *elem = hash_table_query(&ht, &keys[i], sizeof keys[i]);
         assert(elem != NULL);
         assert(elem->ptr == &values[i]);
     }
+    hash_table_destroy(&ht);
+}
+
+static void test_binary_key_lengths(void) {
+    hash_table_t ht;
+    unsigned char key[256] = {0};
+    hash_table_elem_t *elems[65];
+
+    hash_table_init(&ht);
+    /* Equal prefixes with different lengths are distinct keys, including
+     * the empty key. The old polynomial hash mapped all these to bucket 0. */
+    for(size_t n = 0; n < 65; ++n) {
+        assert(hash_table_query(&ht, key, n) == NULL);
+        elems[n] = hash_table_insert(&ht, key, n, NULL);
+    }
+    for(size_t n = 0; n < 65; ++n)
+        assert(hash_table_query(&ht, key, n) == elems[n]);
+    assert(hash_table_query(&ht, key, sizeof(key)) == NULL);
+
+    for(size_t n = 0; n < 65; n += 2)
+        hash_table_remove(&ht, elems[n]);
+    for(size_t n = 0; n < 65; ++n)
+        assert(hash_table_query(&ht, key, n) == (n % 2 ? elems[n] : NULL));
     hash_table_destroy(&ht);
 }
 
@@ -127,5 +151,6 @@ int main(void) {
     test_string_keys();
     test_remove();
     test_many_entries();
+    test_binary_key_lengths();
     return 0;
 }
