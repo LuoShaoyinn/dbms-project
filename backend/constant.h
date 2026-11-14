@@ -8,6 +8,7 @@
 #define MAX_COLUMN              8
 #define MAX_KEY_NAME_LENGTH     32
 #define MAX_FMT_LENGTH          32
+#define MAX_DB_NAME_LENGTH      64
 #define MAX_ELEM_N              2048
 
 #define MAX_FILENAME            256
