@@ -19,6 +19,7 @@
 #include "constant.h"
 #include "fs/fs.h"
 #include "catalog.h"
+#include "catalog_internal.h"
 
 #define CATALOG_DB_ROOT     BASE_DIR DB_PREFIX
 
@@ -30,7 +31,7 @@ static bool _catalog_is_dot(const char *name) {
     return strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
 }
 
-static bool _catalog_name_ok(const char *name) {
+bool _catalog_name_ok(const char *name) {
     if(name == NULL) return false;
 
     size_t len = strlen(name);
@@ -50,15 +51,13 @@ static int _catalog_db_path(char *out, const char *db_name) {
     return (n < 0 || (size_t)n >= MAX_FILENAME) ? -1 : 0;
 }
 
-static int _catalog_sub_path(char *out, const char *db_name,
-        const char *sub) {
+int _catalog_sub_path(char *out, const char *db_name, const char *sub) {
     int n = snprintf(out, MAX_FILENAME, CATALOG_DB_ROOT "%s/%s",
             db_name, sub);
     return (n < 0 || (size_t)n >= MAX_FILENAME) ? -1 : 0;
 }
 
-static int _catalog_child_path(char *out, const char *dir,
-        const char *name) {
+int _catalog_child_path(char *out, const char *dir, const char *name) {
     size_t len = strlen(dir);
     int n;
     if(len > 0 && dir[len - 1] == '/')
@@ -68,10 +67,11 @@ static int _catalog_child_path(char *out, const char *dir,
     return (n < 0 || (size_t)n >= MAX_FILENAME) ? -1 : 0;
 }
 
-static int _catalog_paths(char *db_path, char *table_path, char *index_path,
-        const char *db_name) {
+static int _catalog_paths(char *db_path, char *table_path, char *schema_path,
+        char *index_path, const char *db_name) {
     if(_catalog_db_path(db_path, db_name) != 0) return -1;
     if(_catalog_sub_path(table_path, db_name, TABLE_PREFIX) != 0) return -1;
+    if(_catalog_sub_path(schema_path, db_name, SCHEMA_PREFIX) != 0) return -1;
     if(_catalog_sub_path(index_path, db_name, INDEX_PREFIX) != 0) return -1;
     return 0;
 }
@@ -83,12 +83,19 @@ static catalog_status_t _catalog_require_dir(const char *path) {
     return S_ISDIR(st.st_mode) ? CATALOG_OK : CATALOG_ERR_NOT_FOUND;
 }
 
-static int _catalog_remove_file(const char *path) {
+char* _catalog_dup_path(const char *path) {
     size_t len = strlen(path) + 1;
-    char *owned = (char*)malloc(len);
-    if(owned == NULL) return -1;
-    memcpy(owned, path, len);
-    return fs_remove(owned);
+    char *copy = (char*)malloc(len);
+    if(copy == NULL) {
+        perror("catalog: malloc");
+        exit(-1);
+    }
+    memcpy(copy, path, len);
+    return copy;
+}
+
+static int _catalog_remove_file(const char *path) {
+    return fs_remove(_catalog_dup_path(path));
 }
 
 static int _catalog_rmdir(const char *path) {
@@ -123,8 +130,10 @@ catalog_status_t catalog_create_db(catalog_t *this, const char *db_name) {
 
     char db_path[MAX_FILENAME];
     char table_path[MAX_FILENAME];
+    char schema_path[MAX_FILENAME];
     char index_path[MAX_FILENAME];
-    if(_catalog_paths(db_path, table_path, index_path, db_name) != 0)
+    if(_catalog_paths(db_path, table_path, schema_path, index_path,
+            db_name) != 0)
         return CATALOG_ERR_INVALID;
 
     struct stat st;
@@ -151,6 +160,14 @@ catalog_status_t catalog_create_db(catalog_t *this, const char *db_name) {
         return err == EEXIST ? CATALOG_ERR_EXISTS : CATALOG_ERR_IO;
     }
 
+    if(mkdir(schema_path, 0755) != 0) {
+        int err = errno;
+        rmdir(index_path);
+        rmdir(table_path);
+        rmdir(db_path);
+        return err == EEXIST ? CATALOG_ERR_EXISTS : CATALOG_ERR_IO;
+    }
+
     return CATALOG_OK;
 }
 
@@ -160,13 +177,16 @@ catalog_status_t catalog_use_db(catalog_t *this, const char *db_name) {
 
     char db_path[MAX_FILENAME];
     char table_path[MAX_FILENAME];
+    char schema_path[MAX_FILENAME];
     char index_path[MAX_FILENAME];
-    if(_catalog_paths(db_path, table_path, index_path, db_name) != 0)
+    if(_catalog_paths(db_path, table_path, schema_path, index_path,
+            db_name) != 0)
         return CATALOG_ERR_INVALID;
 
     /* Validate completely before touching the current selection. */
     catalog_status_t status = _catalog_require_dir(db_path);
     if(status == CATALOG_OK) status = _catalog_require_dir(table_path);
+    if(status == CATALOG_OK) status = _catalog_require_dir(schema_path);
     if(status == CATALOG_OK) status = _catalog_require_dir(index_path);
     if(status != CATALOG_OK) return status;
 
@@ -228,8 +248,10 @@ catalog_status_t catalog_drop_db(catalog_t *this, const char *db_name) {
 
     char db_path[MAX_FILENAME];
     char table_path[MAX_FILENAME];
+    char schema_path[MAX_FILENAME];
     char index_path[MAX_FILENAME];
-    if(_catalog_paths(db_path, table_path, index_path, db_name) != 0)
+    if(_catalog_paths(db_path, table_path, schema_path, index_path,
+            db_name) != 0)
         return CATALOG_ERR_INVALID;
 
     catalog_status_t status = _catalog_require_dir(db_path);
@@ -237,10 +259,13 @@ catalog_status_t catalog_drop_db(catalog_t *this, const char *db_name) {
 
     status = _catalog_remove_dir_files(table_path);
     if(status == CATALOG_OK)
+        status = _catalog_remove_dir_files(schema_path);
+    if(status == CATALOG_OK)
         status = _catalog_remove_dir_files(index_path);
     if(status != CATALOG_OK) return status;
 
     if(_catalog_rmdir(table_path) != 0) return CATALOG_ERR_IO;
+    if(_catalog_rmdir(schema_path) != 0) return CATALOG_ERR_IO;
     if(_catalog_rmdir(index_path) != 0) return CATALOG_ERR_IO;
     if(_catalog_rmdir(db_path) != 0) return CATALOG_ERR_IO;
 

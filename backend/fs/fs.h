@@ -23,6 +23,8 @@
  *          <db_name>/
  *              table/
  *                  <table_name>
+ *              schema/
+ *                  <table_name>
  *              index/
  *                  <btree>
  *

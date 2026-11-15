@@ -3,7 +3,8 @@
  *
  * On-disk layout:
  *      data/db/<database>/
- *          table/
+ *          table/      physical table files
+ *          schema/     logical schema metadata, one file per table
  *          index/
  *
  * A catalog owns only the selected database name. Table handles and scans are
@@ -25,6 +26,7 @@
 #include <stddef.h>
 
 #include "constant.h"
+#include "schema.h"
 
 /* Recoverable catalog statuses. Every negative value is an error. */
 typedef enum _s_catalog_status {
@@ -65,6 +67,29 @@ void catalog_destroy(catalog_t *this);
 catalog_status_t catalog_create_db(catalog_t *this, const char *db_name);
 catalog_status_t catalog_drop_db(catalog_t *this, const char *db_name);
 catalog_status_t catalog_use_db(catalog_t *this, const char *db_name);
+
+/* Table management. Every operation acts on the selected database and
+ * returns CATALOG_ERR_NO_DB when none is selected. Table names follow the
+ * same identifier rules as database names.
+ *
+ * catalog_create_table:
+ *      validate the logical schema, create the physical table, then persist
+ *      its metadata under schema/<table_name>. A table that already exists
+ *      yields CATALOG_ERR_EXISTS and leaves the existing table untouched.
+ * catalog_drop_table:
+ *      remove the physical table and its schema metadata. A missing table
+ *      yields CATALOG_ERR_NOT_FOUND.
+ * catalog_get_schema:
+ *      load a table's logical schema for a frontend's DESC output. On success
+ *      *schema is owned by the caller and must be released with
+ *      schema_destroy(). A missing table yields CATALOG_ERR_NOT_FOUND.
+ *
+ * The backend never prints DESC output; callers format the returned schema. */
+catalog_status_t catalog_create_table(catalog_t *this, const char *table_name,
+        const schema_t *schema);
+catalog_status_t catalog_drop_table(catalog_t *this, const char *table_name);
+catalog_status_t catalog_get_schema(catalog_t *this, const char *table_name,
+        schema_t **schema);
 
 /* catalog_list_dbs:
  *      visit the database directories under data/db/.

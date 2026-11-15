@@ -167,6 +167,9 @@ static void test_create_list_use(void) {
     assert(path_is_dir(path));
     table_dir_path(path, sizeof(path), DB_ALPHA);
     assert(path_is_dir(path));
+    snprintf(path, sizeof(path), BASE_DIR DB_PREFIX "%s/" SCHEMA_PREFIX,
+            DB_ALPHA);
+    assert(path_is_dir(path));
     snprintf(path, sizeof(path), BASE_DIR DB_PREFIX "%s/" INDEX_PREFIX,
             DB_ALPHA);
     assert(path_is_dir(path));

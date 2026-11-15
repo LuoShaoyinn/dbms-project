@@ -9,6 +9,7 @@
 #define MAX_KEY_NAME_LENGTH     32
 #define MAX_FMT_LENGTH          32
 #define MAX_DB_NAME_LENGTH      64
+#define MAX_VARCHAR_LENGTH      1024
 #define MAX_ELEM_N              2048
 
 #define MAX_FILENAME            256
@@ -20,6 +21,7 @@
 #define BASE_DIR                "./data/"
 #define DB_PREFIX               "db/"
 #define TABLE_PREFIX            "table/"
+#define SCHEMA_PREFIX           "schema/"
 #define INDEX_PREFIX            "index/"
 
 #endif // _H_CONSTANT
