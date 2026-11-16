@@ -4,13 +4,15 @@
 
 #define _POSIX_C_SOURCE 200809L
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdarg.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <stdbool.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -18,6 +20,7 @@
 #include "constant.h"
 #include "utils/hash_table/hash_table.h"
 #include "utils/list/list.h"
+#include "utils/lru/lru.h"
 #include "fs.h"
 
 
@@ -73,12 +76,8 @@ static fs_file_t* _fs_file_resolve(const char *filename) {
 
 
 static void _fs_free_page(_fs_page_t* p_fs_page) {
-    if(p_fs_page == NULL) return;
     p_fs_page->is_in_lru = false;
-    if(p_fs_page->ref_list_node != NULL) {
-        list_node_remove(p_fs_page->ref_list_node);
-        p_fs_page->ref_list_node = NULL;
-    }
+    list_node_remove(p_fs_page->ref_list_node);
     munmap(p_fs_page->ptr, PAGE_SIZE);
     close(p_fs_page->fd);
     free(p_fs_page);
@@ -110,14 +109,7 @@ void fs_init() {
 
 void fs_destroy() {
     /* The LRU only owns its nodes; pages are owned by the file manager. */
-    for(list_node_t *nd = fs_lru.head->nxt; nd != fs_lru.head; nd = nd->nxt) {
-        lru_node_t *p_lru_node = (lru_node_t*)nd->ptr;
-        _fs_free_page((_fs_page_t*)p_lru_node->ptr);
-        p_lru_node->ptr = NULL;
-    }
     lru_destroy(&fs_lru);
-
-    /* Borrowed pages that were evicted from the LRU only live here. */
     while(fs_page_head->nxt != fs_page_head)
         _fs_free_page((_fs_page_t*)fs_page_head->nxt->ptr);
     free(fs_page_head); fs_page_head = NULL;
@@ -132,8 +124,7 @@ void fs_destroy() {
     free(fs_file_head); fs_file_head = NULL;
 }
 
-static _fs_page_t* _fs_map_page(const char* filename, const size_t page_id,
-        const fs_file_t *file) {
+static _fs_page_t* _fs_map_page(const char* filename, const size_t page_id) {
     int fd = open(filename, O_CREAT | O_RDWR, 0644);
     if(fd == -1) { perror("Can not open file"); exit(-1); }
     struct stat st;
@@ -159,10 +150,8 @@ static _fs_page_t* _fs_map_page(const char* filename, const size_t page_id,
         close(fd);
         exit(-1);
     }
-    p_fs_page->file_id = file->id;
     p_fs_page->is_in_lru = false;
     p_fs_page->ref_cnt = 0;
-    p_fs_page->ref_lru_node = NULL;
     p_fs_page->ref_list_node = list_node_insert(fs_page_head, p_fs_page);
     return p_fs_page;
 }
@@ -195,10 +184,9 @@ fs_datablock_t* fs_borrow(fs_tmp_string filename,
         ++(p_fs_page->ref_cnt);
     }
     else {  
-        p_fs_page = _fs_map_page(filename, page_id, file);
+        p_fs_page = _fs_map_page(filename, page_id);
         p_fs_page->is_in_lru = true;
         p_fs_page->ref_cnt = 1;
-        p_fs_page->ref_lru_node = p_lru_node;
         p_lru_node->ptr = p_fs_page;
         if(p_old_fs_page != NULL) { /* Need free */
             p_old_fs_page->is_in_lru = false;
@@ -217,17 +205,15 @@ fs_datablock_t* fs_borrow(fs_tmp_string filename,
 
 void fs_return(fs_datablock_t *p_datablock) {
     _fs_page_t *p_fs_page = p_datablock->_ref_fs_page;
-    if(p_fs_page->ref_cnt > 0) --(p_fs_page->ref_cnt);
+    --p_fs_page->ref_cnt;
     _fs_try_unmap_page(p_fs_page);
     free(p_datablock);
 }
 
 int fs_create(fs_tmp_string filename) {
-    if(filename == NULL) return -1;
-
     int ret = 0;
     int fd = open(filename, O_CREAT | O_EXCL | O_RDWR, 0644);
-    if(fd == -1) ret = (errno == EEXIST) ? 1 : -1;
+    if(fd == -1) ret = -1;
     else close(fd);
 
     free(filename);
@@ -235,8 +221,6 @@ int fs_create(fs_tmp_string filename) {
 }
 
 bool fs_exists(fs_tmp_string filename) {
-    if(filename == NULL) return false;
-
     int fd = open(filename, O_RDONLY);
     bool found = fd >= 0;
     if(found) close(fd);
@@ -246,31 +230,105 @@ bool fs_exists(fs_tmp_string filename) {
 }
 
 int fs_remove(fs_tmp_string filename) {
-    if(filename == NULL) return -1;
-
     /* Pages are keyed by file id, so the unlinked file's cached pages are
      * unreachable from a later file with the same name. */
-    int ret = 0;
-    if(unlink(filename) != 0) {
-        if(errno != ENOENT) ret = -1;
-        else _fs_file_remove(filename);
-    } else {
+    int ret = unlink(filename);
+    if(ret == 0 || errno == ENOENT)
         _fs_file_remove(filename);
-    }
 
     free(filename);
     return ret;
 }
 
+static fs_tmp_string _fs_name(const char *fmt, ...) {
+    char *path = (char*)malloc(MAX_FILENAME);
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(path, MAX_FILENAME, fmt, args);
+    va_end(args);
+    return path;
+}
+
+fs_tmp_string fs_name_db(const char *db_name) {
+    return _fs_name(BASE_DIR DB_PREFIX "%s", db_name);
+}
+
 fs_tmp_string fs_name_db_table(const char* db_name, const char* table_name) {
-    char* ret = (char*)malloc(sizeof(char) * MAX_FILENAME);
-    snprintf(ret, MAX_FILENAME, BASE_DIR DB_PREFIX \
-            "%s/" TABLE_PREFIX "%s", db_name, table_name);
+    return _fs_name(BASE_DIR DB_PREFIX "%s/" TABLE_PREFIX "%s", db_name, table_name);
+}
+
+fs_tmp_string fs_name_db_index(const char* db_name, const char* index_name) {
+    return _fs_name(BASE_DIR DB_PREFIX "%s/" INDEX_PREFIX "%s", db_name, index_name);
+}
+
+int fs_mkdir(fs_tmp_string path) {
+    int ret = mkdir(path, 0755);
+    free(path);
     return ret;
 }
-fs_tmp_string fs_name_db_index(const char* db_name, const char* index_name) {
-    char* ret = (char*)malloc(sizeof(char) * MAX_FILENAME);
-    snprintf(ret, MAX_FILENAME, BASE_DIR DB_PREFIX \
-            "%s/" INDEX_PREFIX "%s", db_name, index_name);
+
+int fs_rmdir(fs_tmp_string path) {
+    int ret = rmdir(path);
+    free(path);
+    return ret;
+}
+
+int fs_list(fs_tmp_string path, bool directories,
+        char names[][MAX_DB_NAME_LENGTH], size_t *count) {
+    *count = 0;
+    DIR *dir = opendir(path);
+    if(dir == NULL) {
+        free(path);
+        return -1;
+    }
+    int ret = 0;
+    for(;;) {
+        errno = 0;
+        struct dirent *entry = readdir(dir);
+        if(entry == NULL) {
+            if(errno != 0) ret = -1;
+            break;
+        }
+        /* Database/table names contain no dots; skip directory bookkeeping. */
+        if(entry->d_name[0] == '.') continue;
+
+        fs_tmp_string child = _fs_name("%s%s", path, entry->d_name);
+        struct stat st;
+        int status = stat(child, &st);
+        free(child);
+        if(status != 0) {
+            ret = -1;
+            break;
+        }
+        bool match = directories ? S_ISDIR(st.st_mode) : S_ISREG(st.st_mode);
+        if(match) strcpy(names[(*count)++], entry->d_name);
+    }
+    if(closedir(dir) != 0) ret = -1;
+    free(path);
+    return ret;
+}
+
+int fs_clear_dir(fs_tmp_string path) {
+    DIR *dir = opendir(path);
+    if(dir == NULL) {
+        free(path);
+        return -1;
+    }
+    int ret = 0;
+    for(;;) {
+        errno = 0;
+        struct dirent *entry = readdir(dir);
+        if(entry == NULL) {
+            if(errno != 0) ret = -1;
+            break;
+        }
+        if(entry->d_name[0] == '.') continue;
+        if(fs_remove(_fs_name("%s%s", path, entry->d_name)) != 0) {
+            ret = -1;
+            break;
+        }
+    }
+    if(closedir(dir) != 0) ret = -1;
+    free(path);
     return ret;
 }

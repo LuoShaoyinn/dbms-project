@@ -1,5 +1,5 @@
 /* elem_type.h
- *      Dynamic type for elements
+ *      Pointer-free descriptor for one scalar value
  */
 
 #ifndef _H_ELEM_TYPE
@@ -8,21 +8,17 @@
 #include <stddef.h>
 #include <stdint.h>
 
-extern const char ELEM_TYPE_D; /* double */
-extern const char ELEM_TYPE_I; /* int32_t */
-extern const char ELEM_TYPE_S; /* char[len] */
+#define ELEM_TYPE_D 'd' /* double */
+#define ELEM_TYPE_I 'i' /* int32_t */
+#define ELEM_TYPE_S 's' /* fixed-width string */
 
 typedef struct _elem_type_s {
-    uint32_t n;
-    size_t *offset_presum;
-    char* fmt;
+    char kind;
+    uint32_t size;
 } elem_type_t;
 
-void elem_type_init(elem_type_t *this, const char* fmt);
-void elem_type_save(elem_type_t *this, char* fmt);
-void elem_type_destory(elem_type_t *this);
-size_t elem_type_sizeof(elem_type_t *this);
-size_t elem_type_total_n(elem_type_t *this);
-void* elem_type_kth(elem_type_t *this, void* start_ptr, const uint32_t kth);
+/* Parse a trusted scalar format ("i", "d", "s<n>") once. No allocations. */
+int elem_type_init(elem_type_t *this, const char *fmt);
+size_t elem_type_sizeof(const elem_type_t *this);
 
 #endif // _H_ELEM_TYPE

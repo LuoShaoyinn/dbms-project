@@ -4,31 +4,21 @@
 
 #include <assert.h>
 #include <stdint.h>
-#include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
+#include "column/column.h"
 #include "constant.h"
 #include "table/table.h"
 
-static void header_build(table_header_t *this, const uint32_t m,
-        const char **key_name, const char **fmt,
+static table_header_t* header_build(char *buffer, const uint32_t m,
+        const column_t *columns, const char *const *defaults,
         const uint32_t page_count, const uint32_t free_page_hint) {
-    this->m = m;
-    this->page_count = page_count;
-    this->free_page_hint = free_page_hint;
-    this->key_name = (char**)malloc(sizeof(char*) * m);
-    this->fmt = (elem_type_t*)malloc(sizeof(elem_type_t) * m);
-    this->offset_presum = (size_t*)malloc(sizeof(size_t) * (m + 1));
-    this->offset_presum[0] = 0;
-
-    for(uint32_t c = 0; c < m; ++c) {
-        this->key_name[c] = (char*)malloc(sizeof(char) \
-                * (strlen(key_name[c]) + 1));
-        strcpy(this->key_name[c], key_name[c]);
-        elem_type_init(&this->fmt[c], fmt[c]);
-        this->offset_presum[c + 1] = this->offset_presum[c]
-                + elem_type_sizeof(&this->fmt[c]);
-    }
+    table_header_t *head = (table_header_t*)buffer;
+    assert(table_header_build(head, m, columns, defaults) == 0);
+    head->page_count = page_count;
+    head->free_page_hint = free_page_hint;
+    return head;
 }
 
 static uint64_t slot_mask(const uint32_t slots) {
@@ -47,207 +37,160 @@ static void test_null_bitmap_size(void) {
     head.m = 17; assert(table_get_null_bitmap_size(&head) == 3);
 }
 
-static void test_header_roundtrip(void) {
-    table_header_t src;
-    table_header_t dst;
-    const char *key_name[] = {"id", "name", "score"};
-    const char *fmt[] = {"i", "s32", "d"};
-    void *buffer = malloc(PAGE_SIZE);
-    assert(buffer != NULL);
+static void test_header_build(void) {
+    const column_t columns[] = {
+        {.name = "id", .type = {ELEM_TYPE_I, 4}},
+        {.name = "name", .type = {ELEM_TYPE_S, 32}, .not_null = true},
+        {.name = "score", .type = {ELEM_TYPE_D, 8}},
+    };
+    const char *defaults[] = {NULL, "guest", "1.5"};
+    _Alignas(table_header_t) char buffer[PAGE_SIZE];
+    table_header_t *head = header_build(buffer, 3, columns, defaults, 7, 3);
 
-    header_build(&src, 3, key_name, fmt, 7, 3);
-    assert(table_header_validate(&src) == 0);
-    assert(table_header_save(&src, buffer) == 0);
-    table_header_destory(&src);
+    assert(head->m == 3);
+    assert(head->page_count == 7);
+    assert(head->free_page_hint == 3);
+    assert(head->record_size == 45);
 
-    table_header_init(&dst, buffer);
-    assert(dst.m == 3);
-    assert(dst.page_count == 7);
-    assert(dst.free_page_hint == 3);
+    assert(strcmp(head->columns[0].name, "id") == 0);
+    assert(head->columns[0].type.kind == ELEM_TYPE_I);
+    assert(head->columns[0].not_null == 0);
+    assert(head->columns[1].not_null == 1);
 
-    for(uint32_t c = 0; c < 3; ++c) {
-        assert(strcmp(dst.key_name[c], key_name[c]) == 0);
-        assert(strcmp(dst.fmt[c].fmt, fmt[c]) == 0);
-        assert(elem_type_total_n(&dst.fmt[c]) == 1);
-    }
+    assert(head->columns[0].offset == 1);
+    assert(head->columns[1].offset == 5);
+    assert(head->columns[2].offset == 37);
 
-    assert(elem_type_sizeof(&dst.fmt[0]) == sizeof(int32_t));
-    assert(elem_type_sizeof(&dst.fmt[1]) == 32);
-    assert(elem_type_sizeof(&dst.fmt[2]) == sizeof(double));
+    assert(column_size(&head->columns[0]) == sizeof(int32_t));
+    assert(column_size(&head->columns[1]) == 32);
+    assert(column_size(&head->columns[2]) == sizeof(double));
 
-    /* Payloads start at 0, 4 and 36; the NULL bitmap shifts them by 1. */
-    assert(dst.offset_presum[0] == 0);
-    assert(dst.offset_presum[1] == 4);
-    assert(dst.offset_presum[2] == 36);
-    assert(dst.offset_presum[3] == 44);
+    assert(column_default(head, &head->columns[0]) == NULL);
+    assert(strcmp(column_default(head, &head->columns[1]), "guest") == 0);
+    assert(strcmp(column_default(head, &head->columns[2]), "1.5") == 0);
 
-    assert(table_get_null_bitmap_size(&dst) == 1);
-    assert(table_get_cell_offset(&dst, 0) == 1);
-    assert(table_get_cell_offset(&dst, 1) == 5);
-    assert(table_get_cell_offset(&dst, 2) == 37);
-    assert(table_get_record_size(&dst) == 45);
+    assert(strcmp(column_type_name(&head->columns[0]), "INT") == 0);
+    assert(strcmp(column_type_name(&head->columns[1]), "VARCHAR") == 0);
+    assert(strcmp(column_type_name(&head->columns[2]), "FLOAT") == 0);
 
-    assert(table_header_search_key_name(&dst, "id") == 0);
-    assert(table_header_search_key_name(&dst, "name") == 1);
-    assert(table_header_search_key_name(&dst, "score") == 2);
-    assert(table_header_search_key_name(&dst, "missing") == (uint32_t)-1);
+    assert(table_get_null_bitmap_size(head) == 1);
+    assert(table_get_cell_offset(head, 0) == 1);
+    assert(table_get_cell_offset(head, 1) == 5);
+    assert(table_get_cell_offset(head, 2) == 37);
+    assert(table_get_record_size(head) == 45);
 
-    table_header_destory(&dst);
-    free(buffer);
+    assert(table_header_search_key_name(head, "id") == 0);
+    assert(table_header_search_key_name(head, "name") == 1);
+    assert(table_header_search_key_name(head, "score") == 2);
+    assert(table_header_search_key_name(head, "missing") == (uint32_t)-1);
+}
+
+static void test_empty_default(void) {
+    const column_t columns[] = {
+        {.name = "tag", .type = {ELEM_TYPE_S, 8}},
+    };
+    const char *defaults[] = {""};
+    _Alignas(table_header_t) char buffer[PAGE_SIZE];
+    table_header_t *head = header_build(buffer, 1, columns, defaults, 0, 1);
+
+    const char *value = column_default(head, &head->columns[0]);
+    assert(value != NULL);
+    assert(value[0] == '\0');
+    assert(head->columns[0].default_offset != 0);
 }
 
 static void test_page_count_above_64(void) {
-    table_header_t src;
-    table_header_t dst;
-    const char *key_name[] = {"id"};
-    const char *fmt[] = {"i"};
-    void *buffer = malloc(PAGE_SIZE);
-    assert(buffer != NULL);
+    const column_t columns[] = {{.name = "id", .type = {ELEM_TYPE_I, 4}}};
+    _Alignas(table_header_t) char buffer[PAGE_SIZE];
+    table_header_t *head = header_build(buffer, 1, columns, NULL, 1000, 700);
 
-    header_build(&src, 1, key_name, fmt, 1000, 700);
-    assert(table_header_validate(&src) == 0);
-    assert(table_header_save(&src, buffer) == 0);
-    table_header_destory(&src);
-
-    table_header_init(&dst, buffer);
-    assert(dst.page_count == 1000);
-    assert(dst.free_page_hint == 700);
+    assert(head->page_count == 1000);
+    assert(head->free_page_hint == 700);
 
     /* RID encoding keeps reaching pages past the old 64-page limit. */
-    uint32_t slots = table_get_slots_per_page(&dst);
+    uint32_t slots = table_get_slots_per_page(head);
     assert(slots == TABLE_SLOT_MAX);
-    assert(table_get_pageid(&dst, slots * 65) == 66);
-    assert(table_get_pageid(&dst, slots * 999) == 1000);
-    assert(table_get_pageid(&dst, slots * 1000) == 1001);
-    assert(table_get_page_offset_in_file(&dst, slots * 999)
+    assert(table_get_pageid(head, slots * 65) == 66);
+    assert(table_get_pageid(head, slots * 999) == 1000);
+    assert(table_get_pageid(head, slots * 1000) == 1001);
+    assert(table_get_page_offset_in_file(head, slots * 999)
             == (size_t)1000 * PAGE_SIZE + sizeof(uint64_t));
-
-    table_header_destory(&dst);
-    free(buffer);
 }
 
 static void test_rid_page_boundaries(void) {
-    table_header_t head;
-    const char *key_name[] = {"payload"};
-    const char *fmt[] = {"s1000"};
+    const column_t columns[] = {{.name = "payload", .type = {ELEM_TYPE_S, 1000}}};
     const size_t record_size = 1001; /* 1 byte NULL bitmap + 1000 */
     const uint32_t slots = (PAGE_SIZE - sizeof(uint64_t)) / record_size;
+    _Alignas(table_header_t) char buffer[PAGE_SIZE];
+    table_header_t *head = header_build(buffer, 1, columns, NULL, 0, 0);
 
-    header_build(&head, 1, key_name, fmt, 0, 0);
-    assert(table_get_record_size(&head) == record_size);
+    assert(table_get_record_size(head) == record_size);
     assert(slots == 8);
-    assert(table_get_slots_per_page(&head) == slots);
+    assert(table_get_slots_per_page(head) == slots);
 
-    assert(table_get_pageid(&head, 0) == 1);
-    assert(table_get_pageid(&head, slots - 1) == 1);
-    assert(table_get_pageid(&head, slots) == 2);
-    assert(table_get_pageid(&head, 2 * slots) == 3);
+    assert(table_get_pageid(head, 0) == 1);
+    assert(table_get_pageid(head, slots - 1) == 1);
+    assert(table_get_pageid(head, slots) == 2);
+    assert(table_get_pageid(head, 2 * slots) == 3);
 
-    assert(table_get_record_offset_in_page(&head, 0)
+    assert(table_get_record_offset_in_page(head, 0)
             == sizeof(uint64_t));
-    assert(table_get_record_offset_in_page(&head, slots - 1)
+    assert(table_get_record_offset_in_page(head, slots - 1)
             == sizeof(uint64_t) + (slots - 1) * record_size);
-    assert(table_get_record_offset_in_page(&head, slots)
+    assert(table_get_record_offset_in_page(head, slots)
             == sizeof(uint64_t));
 
-    assert(table_get_page_offset_in_file(&head, 0)
+    assert(table_get_page_offset_in_file(head, 0)
             == PAGE_SIZE + sizeof(uint64_t));
-    assert(table_get_page_offset_in_file(&head, slots)
+    assert(table_get_page_offset_in_file(head, slots)
             == 2 * PAGE_SIZE + sizeof(uint64_t));
-
-    table_header_destory(&head);
 }
 
 static void test_slot_bitmap_helpers(void) {
-    table_header_t head;
-    const char *key_name[] = {"payload"};
-    const char *fmt[] = {"s1000"};
+    const column_t columns[] = {{.name = "payload", .type = {ELEM_TYPE_S, 1000}}};
     const uint32_t slots = 8;
     const uint64_t full = slot_mask(slots);
+    _Alignas(table_header_t) char buffer[PAGE_SIZE];
+    table_header_t *head = header_build(buffer, 1, columns, NULL, 0, 0);
 
-    header_build(&head, 1, key_name, fmt, 0, 0);
-    assert(table_get_slots_per_page(&head) == slots);
+    assert(table_get_slots_per_page(head) == slots);
 
-    assert(table_page_first_free_slot(&head, 0) == 0);
-    assert(table_page_first_free_slot(&head, 0x3) == 2);
-    assert(table_page_first_free_slot(&head, full) == slots);
-    assert(table_page_is_full(&head, full));
-    assert(!table_page_is_full(&head, full ^ ((uint64_t)1 << (slots - 1))));
-    assert(table_page_first_free_slot(&head,
+    assert(table_page_first_free_slot(head, 0) == 0);
+    assert(table_page_first_free_slot(head, 0x3) == 2);
+    assert(table_page_first_free_slot(head, full) == slots);
+    assert(table_page_is_full(head, full));
+    assert(!table_page_is_full(head, full ^ ((uint64_t)1 << (slots - 1))));
+    assert(table_page_first_free_slot(head,
             full ^ ((uint64_t)1 << 3)) == 3);
-
-    table_header_destory(&head);
 }
 
 static void test_maximum_fitting_record(void) {
-    table_header_t head;
-    const char *key_name[] = {"payload"};
-    const char *fmt[] = {"s8183"}; /* 1 + 8183 = 8184 bytes */
+    const column_t columns[] = {
+        {.name = "payload", .type = {ELEM_TYPE_S, 8183}}, /* 1 + 8183 = 8184 bytes */
+    };
     const size_t max_record = PAGE_SIZE - sizeof(uint64_t);
-    void *buffer = malloc(PAGE_SIZE);
-    assert(buffer != NULL);
+    _Alignas(table_header_t) char buffer[PAGE_SIZE];
+    table_header_t *head = header_build(buffer, 1, columns, NULL, 0, 0);
 
-    header_build(&head, 1, key_name, fmt, 0, 0);
-    assert(table_get_null_bitmap_size(&head) == 1);
-    assert(table_get_record_size(&head) == max_record);
-    assert(table_get_slots_per_page(&head) == 1);
-    assert(table_header_validate(&head) == 0);
-    assert(table_header_save(&head, buffer) == 0);
+    assert(table_get_null_bitmap_size(head) == 1);
+    assert(table_get_record_size(head) == max_record);
+    assert(table_get_slots_per_page(head) == 1);
 
-    assert(table_get_pageid(&head, 0) == 1);
-    assert(table_get_pageid(&head, 1) == 2);
-    assert(table_get_record_offset_in_page(&head, 0)
+    assert(table_get_pageid(head, 0) == 1);
+    assert(table_get_pageid(head, 1) == 2);
+    assert(table_get_record_offset_in_page(head, 0)
             == sizeof(uint64_t));
-    assert(table_get_page_offset_in_file(&head, 1)
+    assert(table_get_page_offset_in_file(head, 1)
             == 2 * PAGE_SIZE + sizeof(uint64_t));
-
-    table_header_destory(&head);
-    free(buffer);
-}
-
-static void test_oversized_schema_rejection(void) {
-    table_header_t head;
-    const char *key_name[] = {"payload"};
-    const char *fmt[] = {"s8184"}; /* 1 + 8184 = 8185: no slot fits */
-    unsigned char *buffer = (unsigned char*)malloc(PAGE_SIZE);
-    char *long_name = (char*)malloc(PAGE_SIZE + 1);
-    assert(buffer != NULL);
-    assert(long_name != NULL);
-
-    header_build(&head, 1, key_name, fmt, 0, 0);
-    assert(table_get_record_size(&head) == PAGE_SIZE - sizeof(uint64_t) + 1);
-    assert(table_get_slots_per_page(&head) == 0);
-    assert(table_header_validate(&head) == -1);
-
-    memset(buffer, 0xa5, PAGE_SIZE);
-    assert(table_header_save(&head, buffer) == -1);
-    for(size_t i = 0; i < PAGE_SIZE; ++i) assert(buffer[i] == 0xa5);
-
-    table_header_destory(&head);
-
-    /* A header that cannot fit page 0 is rejected before writing too. */
-    memset(long_name, 'k', PAGE_SIZE);
-    long_name[PAGE_SIZE] = '\0';
-    const char *big_key[] = {long_name};
-    const char *big_fmt[] = {"i"};
-    header_build(&head, 1, big_key, big_fmt, 0, 0);
-    assert(table_header_validate(&head) == -1);
-    assert(table_header_save(&head, buffer) == -1);
-
-    for(size_t i = 0; i < PAGE_SIZE; ++i) assert(buffer[i] == 0xa5);
-
-    table_header_destory(&head);
-    free(long_name);
-    free(buffer);
 }
 
 int main(void) {
     test_null_bitmap_size();
-    test_header_roundtrip();
+    test_header_build();
+    test_empty_default();
     test_page_count_above_64();
     test_rid_page_boundaries();
     test_slot_bitmap_helpers();
     test_maximum_fitting_record();
-    test_oversized_schema_rejection();
     return 0;
 }
